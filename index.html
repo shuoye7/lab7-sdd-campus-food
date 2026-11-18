@@ -33,6 +33,12 @@
       <button type="submit" id="searchBtn">搜索</button>
     </form>
 
+    <section class="recent-search" id="recentSearch" aria-labelledby="recentSearchTitle" hidden>
+      <span class="recent-title" id="recentSearchTitle">最近搜索</span>
+      <div class="recent-tags" id="recentTags"></div>
+      <button class="recent-clear" type="button" id="recentClear" aria-label="清空最近搜索">清空</button>
+    </section>
+
     <div class="filter-bar" id="filterBar" aria-label="价格与口味筛选">
       <div class="filter-group" role="group" aria-label="价格筛选">
         <span class="filter-label">价格</span>
@@ -80,43 +86,59 @@
       </div>
     </section>
 
-    <section class="panel map-panel" aria-labelledby="mapTitle">
-      <div class="panel-head map-head">
-        <h2 id="mapTitle">地图</h2>
-        <span class="badge badge-map" id="mapBadge">正在准备地图</span>
-      </div>
-      <div class="map-stage">
-        <div id="amapMap" class="map-layer" aria-label="高德地图"></div>
-        <div id="localMap" class="map-layer local-map" aria-label="本地示意地图">
-          <div class="plane" id="localPlane">
-            <div class="plane-grid"></div>
-            <div class="plane-road road h1"></div>
-            <div class="plane-road road h2"></div>
-            <div class="plane-road road v1"></div>
-            <div class="plane-road road v2"></div>
-            <div class="plane-block b1"></div>
-            <div class="plane-block b2"></div>
-            <div class="plane-block b3"></div>
-            <div class="plane-center" title="当前位置"></div>
-            <div id="localMarkers"></div>
-          </div>
-          <div class="map-tip" id="mapTip">本地示意地图 · 可拖动、缩放、点击红点查看详情</div>
-          <div class="zoom-controls">
-            <button type="button" id="zoomIn" aria-label="放大地图">+</button>
-            <button type="button" id="zoomOut" aria-label="缩小地图">−</button>
-            <button type="button" id="zoomReset" aria-label="回到当前位置" title="回到当前位置">◎</button>
-          </div>
-          <div class="local-info" id="localInfo" hidden></div>
+    <div class="right-column">
+      <section class="panel map-panel" aria-labelledby="mapTitle">
+        <div class="panel-head map-head">
+          <h2 id="mapTitle">地图</h2>
+          <span class="badge badge-map" id="mapBadge">正在准备地图</span>
         </div>
-        <div class="map-loading" id="mapLoading" hidden>正在连接高德地图…</div>
-      </div>
-    </section>
+        <div class="map-stage">
+          <div id="amapMap" class="map-layer" aria-label="高德地图"></div>
+          <div id="localMap" class="map-layer local-map" aria-label="本地示意地图">
+            <div class="plane" id="localPlane">
+              <div class="plane-grid"></div>
+              <div class="plane-road road h1"></div>
+              <div class="plane-road road h2"></div>
+              <div class="plane-road road v1"></div>
+              <div class="plane-road road v2"></div>
+              <div class="plane-block b1"></div>
+              <div class="plane-block b2"></div>
+              <div class="plane-block b3"></div>
+              <div class="plane-center" title="当前位置"></div>
+              <div id="localMarkers"></div>
+            </div>
+            <div class="map-tip" id="mapTip">本地示意地图 · 可拖动、缩放、点击红点查看详情</div>
+            <div class="zoom-controls">
+              <button type="button" id="zoomIn" aria-label="放大地图">+</button>
+              <button type="button" id="zoomOut" aria-label="缩小地图">−</button>
+              <button type="button" id="zoomReset" aria-label="回到当前位置" title="回到当前位置">◎</button>
+            </div>
+            <div class="local-info" id="localInfo" hidden></div>
+          </div>
+          <div class="map-loading" id="mapLoading" hidden>正在连接高德地图…</div>
+        </div>
+      </section>
+
+      <section class="panel favorites-panel" aria-labelledby="favTitle">
+        <div class="panel-head">
+          <h2 id="favTitle">我的收藏</h2>
+          <span class="fav-count" id="favCount">0/20</span>
+        </div>
+        <ul class="favorite-list" id="favoriteList" aria-live="polite"></ul>
+        <div class="favorites-empty" id="favoritesEmpty">
+          <p>还没有收藏的餐厅</p>
+          <span>点击卡片上的 ♡ 收藏喜欢的店</span>
+        </div>
+      </section>
+    </div>
   </main>
 
   <footer class="app-footer">
     <span>数据来源：高德开放平台（IP 定位 / 逆地理编码 / POI 搜索）</span>
     <span>接口或地图不可用时自动使用示例数据，仅用于演示</span>
   </footer>
+
+  <div class="toast" id="toast" role="status" aria-live="polite" aria-atomic="true" hidden></div>
 
   <script src="config.local.js"></script>
   <script src="mock-data.js"></script>

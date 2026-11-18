@@ -9,6 +9,19 @@
   var REST = 'https://restapi.amap.com/v3';
   var BASE_SPAN_LNG = 0.018;
   var AMAP_READY_TIMEOUT = 6500;
+  var FAVORITES_STORAGE_KEY = 'campus-food-favorites:v1';
+  var FAVORITES_LIMIT = 20;
+  var FAVORITE_TOAST = {
+    added: '已添加收藏',
+    removed: '已取消收藏',
+    failed: '操作失败，请重试',
+    full: '收藏夹已满（最多20家）'
+  };
+  var RECENT_SEARCH_STORAGE_KEY = 'campus-food-recent-searches:v1';
+  var RECENT_SEARCH_LIMIT = 8;
+  var RECENT_SEARCH_MAX_LENGTH = 50;
+  var RECENT_SEARCH_TOAST = { cleared: '已清空最近搜索' };
+  var toastTimer = null;
 
   var dom = {};
 
@@ -25,6 +38,8 @@
     price: 'all',
     taste: 'all',
     selectedId: null,
+    favorites: [],
+    recentSearches: [],
     route: {
       id: null,
       status: 'idle',
@@ -72,8 +87,12 @@
     cacheDom();
     if (!dom.cardList || !dom.localMap) return;
     state.restaurants = buildMockRestaurants('');
+    state.favorites = readFavorites();
+    state.recentSearches = readRecentSearches();
     renderAddress();
+    renderRecentSearches();
     renderList();
+    renderFavorites();
     renderLocalMarkers();
     renderMeta();
     setMapBadge('本地示意地图', true);
@@ -109,14 +128,34 @@
     dom.zoomIn = document.getElementById('zoomIn');
     dom.zoomOut = document.getElementById('zoomOut');
     dom.zoomReset = document.getElementById('zoomReset');
+    dom.toast = document.getElementById('toast');
+    dom.favoriteList = document.getElementById('favoriteList');
+    dom.favoritesEmpty = document.getElementById('favoritesEmpty');
+    dom.favCount = document.getElementById('favCount');
+    dom.recentSearch = document.getElementById('recentSearch');
+    dom.recentTags = document.getElementById('recentTags');
+    dom.recentClear = document.getElementById('recentClear');
   }
 
   function bindEvents() {
     dom.searchForm.addEventListener('submit', function (event) {
       event.preventDefault();
-      state.keyword = dom.searchInput.value.trim();
-      searchPlaces();
+      handleSearchSubmit(dom.searchInput.value);
     });
+
+    if (dom.recentSearch) {
+      dom.recentSearch.addEventListener('click', function (event) {
+        if (event.target.closest('#recentClear')) {
+          clearRecentSearches();
+          return;
+        }
+        var tag = event.target.closest('.recent-tag');
+        if (!tag) return;
+        var keyword = tag.getAttribute('data-keyword');
+        dom.searchInput.value = keyword;
+        handleSearchSubmit(keyword);
+      });
+    }
 
     dom.filterBar.addEventListener('click', function (event) {
       var priceBtn = event.target.closest('[data-price]');
@@ -146,17 +185,43 @@
     dom.sortRating.addEventListener('click', function () { setSort('rating'); });
 
     dom.cardList.addEventListener('click', function (event) {
+      var favBtn = event.target.closest('.fav-btn');
+      if (favBtn) {
+        event.preventDefault();
+        event.stopPropagation();
+        var favId = favBtn.getAttribute('data-id');
+        toggleFavorite(favId, isFavorite(favId) ? 'remove' : 'add');
+        return;
+      }
       var card = event.target.closest('.card');
       if (card) selectRestaurant(card.getAttribute('data-id'), 'list');
     });
 
     dom.cardList.addEventListener('keydown', function (event) {
       if (event.key !== 'Enter' && event.key !== ' ') return;
+      if (event.target.closest('.fav-btn')) return;
       var card = event.target.closest('.card');
       if (!card) return;
       event.preventDefault();
       selectRestaurant(card.getAttribute('data-id'), 'list');
     });
+
+    if (dom.favoriteList) {
+      dom.favoriteList.addEventListener('click', function (event) {
+        var row = event.target.closest('.favorite-item');
+        if (!row) return;
+        event.preventDefault();
+        focusFavorite(row.getAttribute('data-id'));
+      });
+
+      dom.favoriteList.addEventListener('keydown', function (event) {
+        if (event.key !== 'Enter' && event.key !== ' ') return;
+        var row = event.target.closest('.favorite-item');
+        if (!row) return;
+        event.preventDefault();
+        focusFavorite(row.getAttribute('data-id'));
+      });
+    }
 
     dom.localInfo.addEventListener('click', function (event) {
       if (event.target.closest('.info-close')) {
@@ -324,6 +389,7 @@
     dom.emptyState.hidden = true;
     dom.cardList.innerHTML = list.map(function (item, index) {
       var active = item.id === state.selectedId;
+      var favorite = isFavorite(item.id);
       var score = item.rating == null ? '—' : item.rating.toFixed(1);
       var price = item.price == null ? '—' : item.price;
       return '<li class="card' + (active ? ' is-active' : '') + '" data-id="' + esc(item.id) +
@@ -331,6 +397,9 @@
         '<div class="card-top">' +
         '<span class="card-name"><span class="card-index">' + (index + 1) + '</span>' + esc(item.name) + '</span>' +
         '<span class="card-score">★ ' + score + '</span>' +
+        '<button class="fav-btn' + (favorite ? ' is-active' : '') + '" type="button" data-id="' +
+        esc(item.id) + '" aria-pressed="' + favorite + '" aria-label="' +
+        (favorite ? '取消收藏' : '收藏') + '">' + (favorite ? '♥' : '♡') + '</button>' +
         '</div>' +
         '<div class="card-meta">' +
         '<span class="meta-item">🛣 ' + formatDistance(item.distance) + '</span>' +
@@ -379,6 +448,276 @@
       if (state.restaurants[i].id === id) return state.restaurants[i];
     }
     return null;
+  }
+
+  function readFavorites() {
+    try {
+      var raw = localStorage.getItem(FAVORITES_STORAGE_KEY);
+      if (!raw) return [];
+      var parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) throw new Error('bad favorites');
+      var seen = {};
+      var list = [];
+      for (var i = 0; i < parsed.length && list.length < FAVORITES_LIMIT; i++) {
+        var entry = parsed[i];
+        if (!entry || typeof entry !== 'object') continue;
+        var id = typeof entry.id === 'string' ? entry.id : '';
+        if (!id || seen[id]) continue;
+        seen[id] = true;
+        list.push({
+          id: id,
+          name: typeof entry.name === 'string' ? entry.name : '',
+          taste: typeof entry.taste === 'string' ? entry.taste : '',
+          price: typeof entry.price === 'number' && isFinite(entry.price) ? entry.price : null,
+          lng: typeof entry.lng === 'number' && isFinite(entry.lng) ? entry.lng : null,
+          lat: typeof entry.lat === 'number' && isFinite(entry.lat) ? entry.lat : null,
+          address: typeof entry.address === 'string' ? entry.address : '',
+          addedAt: typeof entry.addedAt === 'number' && isFinite(entry.addedAt) ? entry.addedAt : 0
+        });
+      }
+      return list;
+    } catch (err) {
+      try { localStorage.removeItem(FAVORITES_STORAGE_KEY); } catch (removeErr) { /* ignore */ }
+      return [];
+    }
+  }
+
+  function writeFavorites(list) {
+    try {
+      localStorage.setItem(FAVORITES_STORAGE_KEY, JSON.stringify(list));
+      return true;
+    } catch (err) {
+      return false;
+    }
+  }
+
+  function isFavorite(id) {
+    return !!findFavorite(id);
+  }
+
+  function findFavorite(id) {
+    for (var i = 0; i < state.favorites.length; i++) {
+      if (state.favorites[i].id === id) return state.favorites[i];
+    }
+    return null;
+  }
+
+  function toggleFavorite(id, action) {
+    if (typeof id !== 'string' || !id.trim()) {
+      showToast(FAVORITE_TOAST.failed, 'error');
+      return;
+    }
+    if (action !== 'add' && action !== 'remove') {
+      showToast(FAVORITE_TOAST.failed, 'error');
+      return;
+    }
+    var previous = state.favorites.slice();
+    if (action === 'add') {
+      if (isFavorite(id)) {
+        showToast(FAVORITE_TOAST.added);
+        return;
+      }
+      if (state.favorites.length >= FAVORITES_LIMIT) {
+        showToast(FAVORITE_TOAST.full, 'error');
+        return;
+      }
+      var item = findById(id);
+      if (!item) {
+        showToast(FAVORITE_TOAST.failed, 'error');
+        return;
+      }
+      state.favorites.push({
+        id: item.id,
+        name: item.name || '',
+        taste: item.taste || '',
+        price: typeof item.price === 'number' ? item.price : null,
+        lng: item.lng,
+        lat: item.lat,
+        address: item.address || '',
+        addedAt: Date.now()
+      });
+    } else {
+      state.favorites = state.favorites.filter(function (entry) {
+        return entry.id !== id;
+      });
+    }
+    if (!writeFavorites(state.favorites)) {
+      state.favorites = previous;
+      showToast(FAVORITE_TOAST.failed, 'error');
+      return;
+    }
+    refreshFavoriteViews();
+    showToast(action === 'add' ? FAVORITE_TOAST.added : FAVORITE_TOAST.removed);
+  }
+
+  function ensureFavoriteVisible(id) {
+    var item = findById(id);
+    if (item) return item;
+    var favorite = findFavorite(id);
+    if (!favorite) return null;
+    var lng = Number(favorite.lng);
+    var lat = Number(favorite.lat);
+    if (!isFinite(lng) || !isFinite(lat)) return null;
+    var restored = {
+      id: favorite.id,
+      name: favorite.name || '未命名餐厅',
+      taste: favorite.taste || '美食',
+      price: typeof favorite.price === 'number' ? favorite.price : null,
+      rating: null,
+      lng: lng,
+      lat: lat,
+      address: favorite.address || '',
+      distance: Math.max(10, Math.round(haversine(state.center, { lng: lng, lat: lat }))),
+      source: 'favorite',
+      reason: ''
+    };
+    state.restaurants.push(restored);
+    return restored;
+  }
+
+  function focusFavorite(id) {
+    var item = ensureFavoriteVisible(id);
+    if (!item) {
+      showToast(FAVORITE_TOAST.failed, 'error');
+      return;
+    }
+    state.keyword = '';
+    state.price = 'all';
+    state.taste = 'all';
+    if (dom.searchInput) dom.searchInput.value = '';
+    syncFilterButtons();
+    applyFilters();
+    selectRestaurant(id, 'favorites');
+  }
+
+  function renderFavorites() {
+    if (!dom.favoriteList || !dom.favoritesEmpty || !dom.favCount) return;
+    var count = state.favorites.length;
+    dom.favCount.textContent = count + '/' + FAVORITES_LIMIT;
+    dom.favCount.classList.toggle('is-full', count >= FAVORITES_LIMIT);
+    if (!count) {
+      dom.favoriteList.innerHTML = '';
+      dom.favoritesEmpty.hidden = false;
+      return;
+    }
+    dom.favoritesEmpty.hidden = true;
+    dom.favoriteList.innerHTML = state.favorites.map(function (favorite) {
+      var live = findById(favorite.id);
+      var item = live || favorite;
+      var name = item.name || '未命名餐厅';
+      var taste = item.taste || '美食';
+      var priceText = item.price == null ? '—' : item.price + ' 元';
+      return '<li class="favorite-item" data-id="' + esc(favorite.id) + '" tabindex="0" role="button" ' +
+        'aria-label="' + esc(name) + '，查看并在地图定位">' +
+        '<span class="favorite-item-name">' + esc(name) + '</span>' +
+        '<span class="favorite-item-meta">' + esc(taste) + ' · 人均 ' + esc(priceText) + '</span>' +
+        '</li>';
+    }).join('');
+  }
+
+  function refreshFavoriteViews() {
+    renderList();
+    renderFavorites();
+    markCards();
+  }
+
+  function showToast(message, type) {
+    if (!dom.toast) return;
+    dom.toast.textContent = message;
+    dom.toast.hidden = false;
+    dom.toast.classList.remove('is-visible');
+    dom.toast.classList.toggle('is-error', type === 'error');
+    if (toastTimer) clearTimeout(toastTimer);
+    var reveal = function () { dom.toast.classList.add('is-visible'); };
+    if (window.requestAnimationFrame) window.requestAnimationFrame(reveal);
+    else reveal();
+    toastTimer = setTimeout(function () {
+      dom.toast.classList.remove('is-visible');
+      toastTimer = setTimeout(function () {
+        dom.toast.hidden = true;
+        dom.toast.textContent = '';
+      }, 200);
+    }, type === 'error' ? 2600 : 2000);
+  }
+
+  function readRecentSearches() {
+    try {
+      var raw = localStorage.getItem(RECENT_SEARCH_STORAGE_KEY);
+      if (!raw) return [];
+      var parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) throw new Error('bad recent searches');
+      var seen = {};
+      var list = [];
+      for (var i = 0; i < parsed.length && list.length < RECENT_SEARCH_LIMIT; i++) {
+        var value = parsed[i];
+        if (typeof value !== 'string') continue;
+        var keyword = value.trim();
+        if (!keyword) continue;
+        keyword = keyword.slice(0, RECENT_SEARCH_MAX_LENGTH);
+        if (seen[keyword]) continue;
+        seen[keyword] = true;
+        list.push(keyword);
+      }
+      return list;
+    } catch (err) {
+      try { localStorage.removeItem(RECENT_SEARCH_STORAGE_KEY); } catch (removeErr) { /* ignore */ }
+      return [];
+    }
+  }
+
+  function writeRecentSearches(list) {
+    try {
+      localStorage.setItem(RECENT_SEARCH_STORAGE_KEY, JSON.stringify(list));
+      return true;
+    } catch (err) {
+      return false;
+    }
+  }
+
+  function rememberSearchKeyword(rawValue) {
+    var trimmed = String(rawValue == null ? '' : rawValue).trim();
+    if (!trimmed) return;
+    var record = trimmed.slice(0, RECENT_SEARCH_MAX_LENGTH);
+    state.recentSearches = state.recentSearches.filter(function (item) {
+      return item !== record;
+    });
+    state.recentSearches.unshift(record);
+    state.recentSearches = state.recentSearches.slice(0, RECENT_SEARCH_LIMIT);
+    writeRecentSearches(state.recentSearches);
+    renderRecentSearches();
+  }
+
+  function clearRecentSearches() {
+    state.recentSearches = [];
+    writeRecentSearches([]);
+    renderRecentSearches();
+    showToast(RECENT_SEARCH_TOAST.cleared);
+  }
+
+  function renderRecentSearches() {
+    if (!dom.recentSearch || !dom.recentTags) return;
+    if (!state.recentSearches.length) {
+      dom.recentTags.innerHTML = '';
+      dom.recentSearch.hidden = true;
+      return;
+    }
+    dom.recentTags.innerHTML = state.recentSearches.map(function (keyword) {
+      return '<button class="recent-tag" type="button" data-keyword="' + esc(keyword) + '">' +
+        esc(keyword) + '</button>';
+    }).join('');
+    dom.recentSearch.hidden = false;
+  }
+
+  function handleSearchSubmit(rawValue) {
+    var trimmed = String(rawValue == null ? '' : rawValue).trim();
+    if (!trimmed) {
+      state.keyword = '';
+      searchPlaces();
+      return;
+    }
+    rememberSearchKeyword(trimmed);
+    state.keyword = trimmed;
+    searchPlaces();
   }
 
   async function locateAndSearch() {
@@ -476,6 +815,7 @@
       renderList();
       renderLocalMarkers();
       renderMeta();
+      renderFavorites();
       syncMapCenter();
     } catch (err) {
       applyMockData(keyword, false);
@@ -495,6 +835,7 @@
     renderList();
     renderLocalMarkers();
     renderMeta();
+    renderFavorites();
     if (showNote && keyword) {
       note('示例数据中匹配“' + keyword + '”的餐厅已展示，真实接口恢复后会自动切换。');
     }
